@@ -1,30 +1,22 @@
 #pragma once
 
-#include <Windows.h>
-#include <stdio.h>
-#include <iostream>
 #include "funcs.h"
 
 struct NoClip {
-
-	std::string on = "\xE9\x79\x06\x00\x00";
-	std::string off = "\x6A\x14\x8B\xCB\xFF";
-	size_t byte_size = 5;
+	std::vector<BYTE> on = { 0xE9, 0x79, 0x06, 0x00, 0x00 };
+	std::vector<BYTE> off = { 0x6A, 0x14, 0x8B, 0xCB, 0xFF };
 	DWORD addr = 0x20A23C;
 };
 
 struct FreezePlayer {
-
-	std::string on = "\x90\x90\x90";
-	std::string off = "\x50\xFF\xD6";
-	size_t byte_size = 3;
+	std::vector<BYTE> on = { 0x90, 0x90, 0x90 };
+	std::vector<BYTE> off = { 0x50, 0xFF, 0xD6 };
 	DWORD addr = 0x203519;
 };
 
 struct JumpHack {
-	std::string on = "\x01";
-	std::string off = "\x00";
-	size_t byte_size = 1;
+	std::vector<BYTE> on = { 0x01 };
+	std::vector<BYTE> off = { 0x00 };
 	DWORD addr1 = 0x1E9141;
 	DWORD addr2 = 0x1E9498;
 };

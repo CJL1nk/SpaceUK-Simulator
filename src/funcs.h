@@ -2,23 +2,14 @@
 #include <Windows.h>
 #include <stdio.h>
 #include <iostream>
+#include <vector>
+#include "extensions_2.h"
 
 const auto mod = (uint32_t)GetModuleHandleA("GeometryDash.exe");
 
-inline void menu() {
+inline bool WPM(bool state, DWORD addr, std::vector<BYTE> bytes) {
 
-	int menuInput;
-
-	std::cout << " [1] Noclip" << std::endl;
-	std::cout << " [2] Freeze Player" << std::endl;
-	std::cout << " [3] Jump Hack" << std::endl;
-
-	std::cout << std::endl;
-}
-
-inline bool WPM(bool state, DWORD addr, std::string bytes, size_t size) {
-
-	WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(mod + addr), bytes.c_str(), size, NULL);
+	WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(mod + addr), bytes.data(), bytes.size(), nullptr);
 
 	return !state;
 }
