@@ -6,11 +6,16 @@
 #include <extensions_2.h>
 #include <MinHook.h>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 
 
 // GLOBALS AND FUNCTION DEFINITIONS
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
 
 const auto mod = (uint32_t)GetModuleHandleA("GeometryDash.exe");
 
@@ -18,15 +23,26 @@ int frame = 0;
 uint64_t prevtime = 0;
 bool countFrames = true;
 bool isRecording = false;
-bool isClicking = 0;
-bool prevState = 0;
+bool isPlaying = false;
+bool isClicking = false;
+bool prevState = false;
+
+int macroIndex = 0;
 
 inline void setAttemptsZero(MegaHackExt::Button* obj);
 
 inline bool(__thiscall* playerDestroyed)(void* a, void* b);
 inline void(__thiscall* update)(void* self, void* dt);
 inline void(__thiscall* restartLevel)(void* a);
+inline bool(__thiscall* initLevel)(void* a, void* c);
+inline void(__thiscall* onLevelComplete)(void* a);
 
+inline void loadMacro(unsigned int levelID);
+void sendMouseInput(bool down, bool button);
+
+inline void saveMacro();
+
+namespace fs = std::filesystem;
 
 
 // MAIN FUNCTIONS
@@ -78,31 +94,27 @@ namespace Attempts {
 	}
 }
 
-inline void sendMouseInput(bool down, bool button)
-{
-	POINT pos{}; GetCursorPos(&pos);
-
-	down ? (button ? SendMessage(GetForegroundWindow(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(pos.x, pos.y)) :
-		SendMessage(GetForegroundWindow(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(pos.x, pos.y))) :
-		(button ? SendMessage(GetForegroundWindow(), WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(pos.x, pos.y)) :
-			SendMessage(GetForegroundWindow(), WM_RBUTTONUP, MK_RBUTTON, MAKELPARAM(pos.x, pos.y)));
-}
-
 inline void startConsole() {
 	BOOL attached;
 	attached = AllocConsole() && SetConsoleTitleW(L":3");
 	freopen_s(reinterpret_cast<FILE**>stdin, "CONIN$", "r", stdin);
 	freopen_s(reinterpret_cast<FILE**>stdout, "CONOUT$", "w", stdout);
-
-	printf("Recording Started\n");
 }
 
 inline void unloadConsole() {
-
-	printf("Recording Stopped. You can now close this window.\n");
+	system("pause\n");
 	auto console_window = GetConsoleWindow();
 	FreeConsole();
 	PostMessageA(console_window, WM_QUIT, 0, 0);
+}
+
+inline unsigned int getLevelID() {
+
+	const auto a = *reinterpret_cast<uint32_t*>(mod + 0x3222D0);
+	const auto b = *reinterpret_cast<uint32_t*>(a + 0x2A0);
+
+	//if (!b) { printf("LevelID not found\n"); }
+	return b;
 }
 
 
@@ -112,47 +124,46 @@ inline void unloadConsole() {
 
 
 
-void __fastcall updateHook(void* self, void*, void* dt) {
-
-	if (countFrames) {
-
-		uint64_t now = duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-		uint64_t delta = now - prevtime;
-
-		frame++;
-
-		if (isRecording) {
-
-			if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) { isClicking = true; }
-			else { isClicking = false; }
-
-			if (prevState != isClicking) { std::cout << "[" << frame << ", " << isClicking << "]," << std::endl; }
-
-			prevState = isClicking;
-		}
-
-		//std::cout << "Frame:  " << frame << "      Delta:  " << delta << std::endl;
-
-		prevtime = now;
-	}
-
-	update(self, dt);
-}
-
 void __fastcall deathHook(void* a, void* b) {
 
 	countFrames = false;
 
-	printf("----- DEATH ON FRAME %i -----\n", frame);
+	if (isPlaying) {
+		sendMouseInput(false, true);
+	}
+
+	if (isRecording) {
+		sendMouseInput(false, true);
+		saveMacro();
+	}
+
+	//printf("----- DEATH ON FRAME %i -----\n", frame);
 	playerDestroyed(a, b);
 }
 
 void __fastcall restartLevelHook(void* a, void*) {
 
 	frame = 0;
+	macroIndex = 0;
+
 	countFrames = true;
 
 	restartLevel(a);
+}
+
+void __fastcall initLevelHook(void* a, void* b, void* c) {
+
+	loadMacro(getLevelID());
+	//printf("Level Loaded\n");
+
+	initLevel(a, c);
+}
+
+void __fastcall onLevelCompleteHook(void* a) {
+
+	saveMacro();
+
+	onLevelComplete(a);
 }
 
 
@@ -162,11 +173,17 @@ void __fastcall restartLevelHook(void* a, void*) {
 
 
 
-struct Offsets {
+struct Input {
+	int frame;
+	bool click;
+};
 
+struct Offsets {
 	uint32_t frameUpdate = (mod + 0x2029C0);
 	uint32_t onDeath = (mod + 0x1EFAA0);
 	uint32_t restartLevel = (mod + 0x20BF00);
+	uint32_t initLevel = (mod + 0x01FB780);
+	uint32_t onLevelComplete = (mod + 0x1FD3D0);
 };
 
 struct NoClip {
@@ -206,6 +223,109 @@ const FreezePlayer playerFreeze;
 const JumpHack jumpHack;
 const InstantComplete instantComplete;
 const Offsets offsets;
+
+std::vector<Input> inputs;
+
+
+
+// MACRO STUFF
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+void sendMouseInput(bool down, bool button) {
+	POINT pos{}; GetCursorPos(&pos);
+
+	down ? (button ? SendMessage(GetForegroundWindow(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(pos.x, pos.y)) :
+		SendMessage(GetForegroundWindow(), WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(pos.x, pos.y))) :
+		(button ? SendMessage(GetForegroundWindow(), WM_LBUTTONUP, MK_LBUTTON, MAKELPARAM(pos.x, pos.y)) :
+			SendMessage(GetForegroundWindow(), WM_RBUTTONUP, MK_RBUTTON, MAKELPARAM(pos.x, pos.y)));
+}
+
+inline void saveMacro() {
+
+	std::ofstream outputFile("SpaceUK Macros\\" + std::to_string(getLevelID()) + ".space");
+
+	if (outputFile.is_open()) {
+		for (const auto& input : inputs) {
+			outputFile << input.frame << ";" << input.click << "\n";
+		}
+		outputFile.close();
+		//std::cout << "Save successful." << std::endl;
+	}
+
+	inputs.clear();
+}
+
+inline void loadMacro(unsigned int levelID) {
+
+	inputs.clear();
+
+	std::ifstream file("SpaceUK Macros\\" + std::to_string(levelID) + ".space");
+
+	if (!file) { printf("No file with level ID found\n"); }
+	else {
+
+		std::string line;
+
+		while (std::getline(file, line)) {
+
+			Input input;
+			std::stringstream line_ss(line);
+			std::string token;
+
+			std::getline(line_ss, token, ';');
+			input.frame = std::stoi(token);
+
+			std::getline(line_ss, token, ';');
+			input.click = (std::stoi(token) != 0);
+
+			inputs.push_back(input);
+		}
+
+		file.close();
+		//printf("Macro Loaded\n");
+	}
+}
+
+void __fastcall updateHook(void* self, void*, void* dt) {
+
+	if (countFrames) {
+
+		uint64_t now = duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+		uint64_t delta = now - prevtime;
+
+		frame++;
+
+		if (isRecording) {
+
+			if ((GetKeyState(VK_LBUTTON) & 0x8000) != 0) { isClicking = true; }
+			else { isClicking = false; }
+
+			if (prevState != isClicking) { inputs.push_back({ frame, isClicking }); }
+
+			prevState = isClicking;
+		}
+
+		if (isPlaying) {
+			if (frame == inputs[macroIndex].frame) {
+				//std::cout << "Sending mouse input on frame " << frame << std::endl;
+				sendMouseInput(inputs[macroIndex].click, true);
+				macroIndex++;
+			}
+		}
+
+		//std::cout << "Frame:  " << frame << "      Delta:  " << delta << std::endl;
+
+		prevtime = now;
+	}
+
+	update(self, dt);
+}
+
+void MH_CALL saveMacroMH(MegaHackExt::Button* obj) {
+	saveMacro();
+}
 
 
 
@@ -273,16 +393,31 @@ inline void initWindow() {
 
 	window->add(attempts_zero_button);
 
-	MegaHackExt::CheckBox* record_checkbox = MegaHackExt::CheckBox::Create("record macro");
+	MegaHackExt::CheckBox* record_checkbox = MegaHackExt::CheckBox::Create("record");
 	record_checkbox->setCallback([](MegaHackExt::CheckBox* obj, bool a) {
 
 		isRecording = !isRecording;
 
-		if (isRecording) { startConsole(); }
-		else { unloadConsole(); }
+		if (isRecording) {
+			inputs.clear();
+			//printf("Recording Started\n");
+		}
+		//else { printf("Recording Stopped\n"); }
 
 		});
-	window->add(record_checkbox);
+
+	MegaHackExt::Button* save_button = MegaHackExt::Button::Create("save Macro");
+	save_button->setCallback(saveMacroMH);
+
+	window->add(MegaHackExt::HorizontalLayout::Create(record_checkbox, save_button));
+
+	MegaHackExt::CheckBox* replay_checkbox = MegaHackExt::CheckBox::Create("Replay macro");
+	replay_checkbox->setCallback([](MegaHackExt::CheckBox* obj, bool a) {
+
+		isPlaying = !isPlaying;
+		});
+
+	window->add(replay_checkbox);
 
 	MegaHackExt::Client::commit(window);
 }
